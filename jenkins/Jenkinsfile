@@ -1,0 +1,73 @@
+pipeline {
+    agent any
+
+    environment {
+        IMAGE_NAME = "ram-codehub/devops-demo-app"
+        IMAGE_TAG = "v${BUILD_NUMBER}"
+        REPO_URL = "git@github.com:ram-codehub/devops-k8s-pipeline-demo.git"
+        CHART_PATH = "helm-chart"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                echo "📦 Checking out source..."
+                checkout scm
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                echo "🐳 Building Docker image..."
+                sh "docker build -t $IMAGE_NAME:$IMAGE_TAG ./app"
+            }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                echo "🚀 Pushing image to Docker Hub..."
+                withCredentials([usernamePassword(credentialsId: 'docker-hub-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                    sh """
+                        echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+                        docker push $IMAGE_NAME:$IMAGE_TAG
+                        docker logout
+                    """
+                }
+            }
+        }
+
+        stage('Update values.yaml') {
+            steps {
+                echo "✏️ Updating Helm values.yaml with new image tag..."
+                sh """
+                    sed -i 's|repository:.*|repository: $IMAGE_NAME|' $CHART_PATH/values.yaml
+                    sed -i 's|tag:.*|tag: "$IMAGE_TAG"|' $CHART_PATH/values.yaml
+                """
+            }
+        }
+
+        stage('Push Helm Update to Git (for Argo CD)') {
+            steps {
+                echo "📤 Committing updated values.yaml for Argo CD sync..."
+                sshagent(credentials: ['github-ssh']) {
+                    sh """
+                        git config user.name "CI Bot"
+                        git config user.email "ci-bot@example.com"
+                        git add $CHART_PATH/values.yaml
+                        git commit -m "Update image to $IMAGE_NAME:$IMAGE_TAG"
+                        git push origin main
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "✅ Pipeline completed — Argo CD will sync the new image."
+        }
+        failure {
+            echo "❌ Something went wrong!"
+        }
+    }
+}
